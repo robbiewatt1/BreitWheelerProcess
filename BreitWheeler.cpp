@@ -10,10 +10,28 @@ BreitWheeler::BreitWheeler(PhotonField* field, const G4String& name,
 G4VDiscreteProcess(name, type)
 {
     m_field = field;
+    m_rotatedIndex  = new int [m_field->getResolution()];
+    m_energyInt     = new double [m_field->getResolution()];
+    m_comEnergy*    = new double* [m_field->getResolution()];
+    m_comEnergyInt* = new double* [m_field->getResolution()];
+    for (int i = 0; i < m_field->getResolution(); i++)
+    {
+        m_comEnergy[i] = new double [m_field->getResolution()];
+        m_comEnergyInt[i] = new double [m_field->getResolution()];
+    }
 }
 
 BreitWheeler::~BreitWheeler()
 {
+    delete [] m_rotatedIndex;
+    delete [] m_energyInt;
+    for (int i = 0; i < count; ++i)
+    {
+        delete [] m_comEnergy[i];
+        delete [] m_comEnergyInt[i];
+    }
+    delete [] m_comEnergy;
+    delete [] m_comEnergyInt;
 }
 
 G4bool BreitWheeler::IsApplicable(const G4ParticleDefinition& particle)
@@ -55,58 +73,49 @@ G4double BreitWheeler::GetMeanFreePath(const G4Track& track, G4double,
             break;
         }
     }
-    int* rotatedIndex = new int [resolusion];
     for (int i = 0; i < resolusion; ++i)
     {
         if (i >= angleIndex)
         {
-            rotatedIndex[i] = i - angleIndex;
+            m_rotatedIndex[i] = i - angleIndex;
         } else
         {
-            rotatedIndex[i] = resolusion - (angleIndex - i);
+            m_rotatedIndex[i] = resolusion - (angleIndex - i);
         }
     }
 
-    double* energyInt = new double [resolusion];
-    double* comEnergy = new double [resolusion];
-    double* comEnergyInt = new double [resolusion];
     // Integral over photon energy epsilon
     for (int i = 0; i < resolusion; i++)
     {
         // integrate over s
         for (int j = 0; j < resolusion; j++)
         {
-           comEnergy[j] = photonEnergy[i] * gammaEnergy * (1.0 - 
+           m_comEnergy[i][j] = photonEnergy[i] * gammaEnergy * (1.0 - 
                     std::cos(photonAngle[j])) / (electron_mass_c2 
                     * electron_mass_c2);
-            if (comEnergy[j] > 1.0)
+            if (m_comEnergy[i][j] > 1.0)
             {
-                comEnergyInt[j] = crossSection(comEnergy[j])
-                    * photonDensity[i][rotatedIndex[j]] * comEnergy[j];
+                m_comEnergyInt[j] = crossSection(m_comEnergy[i][j])
+                    * photonDensity[i][rotatedIndex[j]] * m_comEnergy[i][j];
             } else
             {
-                comEnergyInt[j] = 0;
+                m_comEnergyInt[i][j] = 0;
             }
         }
         if (photonEnergy[i] > electron_mass_c2 * electron_mass_c2 
                 / gammaEnergy)
         {
-            energyInt[i] = trapezium(comEnergy, comEnergyInt, resolusion)
-                    / (photonEnergy[i] * photonEnergy[i]);
+            m_energyInt[i] = trapezium(m_comEnergy[i], m_comEnergyInt[i], 
+                    resolusion) / (photonEnergy[i] * photonEnergy[i]);
         } else
         {
-            energyInt[i] = 0;
+            m_energyInt[i] = 0;
         }
     }
     double meanPath = gammaEnergy * gammaEnergy / 
-            (trapezium(photonEnergy, energyInt, resolusion) * pi 
+            (trapezium(photonEnergy, m_energyInt, resolusion) * pi 
                 * classic_electr_radius * classic_electr_radius
                 * electron_mass_c2 * electron_mass_c2);
-    
-    delete [] rotatedIndex;
-    delete [] energyInt;
-    delete [] comEnergy;
-    delete [] comEnergyInt;
    
     return meanPath;
 }
@@ -115,8 +124,9 @@ G4VParticleChange* BreitWheeler::PostStepDoIt(const G4Track& aTrack,
         const G4Step& aStep)
 {
     aParticleChange.Initialize(aTrack);
+    const G4DynamicParticle *aDynamicGamma = aTrack.GetDynamicParticle();
+    double gammaEnergy = aDynamicGamma->GetKineticEnergy();
 
-    
     return G4VDiscreteProcess::PostStepDoIt(aTrack, aStep);
 }
 
@@ -140,6 +150,68 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
 
 }
 
+ double BreitWheeler::samplePhotonEnergy(double gammaEnergy, gammaAngle)
+ {
+    double maxDensity = std::max_element(m_energyInt,
+            &m_energyInt[m_field->getResolution-1]);
+    double randEnergy;
+    double randDensity;
+    double photonDensity;
+    do 
+    {
+        randEnergy = m_field->getMinEnergy() + G4UniformRand() *
+                (m_field->getMaxEnergy() - m_field->getMinEnergy());
+        randDensity = G4UniformRand() * maxDensity;
+        photonDensity = interpolate1D(m_field->getEnergy(), m_energyInt,
+                m_field->getResolution(), randEnergy);
+
+    } while (randDensity > photonDensity)
+    return randEnergy;
+}
+
+double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy, 
+        double gammaAngle)
+{
+    double energyIndex = arrayIndex(m_field->getEnergy(), photonEnergy,
+            m_field->getResolution);
+    int lowIndex  = energyIndex;
+    double fracIndex = energyIndex - lowIndex;
+
+    double maxCon = photonEnergy * gammaEnergy / (electron_mass_c2
+                * electron_mass_c2);
+    double maxDensity = std::max_element(m_comEnergyInt[highIndex],
+            &m_comEnergyInt[highIndex][m_field->getResolution-1]);
+    double randCom;
+    double randDensity;
+    double comDensity;
+    do
+    {
+        randCom = 1.0 + (maxCon - 1.0) * G4UniformRand();
+        randDensity = maxDensity * G4UniformRand();
+        comDensity = (1.0 - fracIndex) * interpolate1D(m_comEnergy[lowIndex],
+                m_comEnergyInt[lowIndex], m_field->getResolution(), randCom)
+            * (fracIndex) * interpolate1D(m_comEnergy[highIndex],
+                m_comEnergyInt[highIndex], m_field->getResolution(), randCom);
+    } while (randDensity > comDensity)
+    return randCom;
+}
+
+double BreitWheeler::samplePairAngle(double comEnergy)
+{
+    double maxDensity = diffCrossSection(comEnergy, 2.0 * pi);
+    double randAngle;
+    double randDensity;
+    double angleDensity;
+
+    do
+    {
+        randAngle    = G4UniformRand() * 2.0 * pi;
+        randDensity  = G4UniformRand() * maxDensity;
+        angleDensity = diffCrossSection(comEnergy, randAngle);
+    } while (randDensity > angleDensity)
+    return randAngle;
+}
+
  double BreitWheeler::trapezium(double* variable, double* integrand,
         int resolusion)
  {
@@ -151,3 +223,61 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
     }
     return result;
  }
+
+ 
+double PhotonField::interpolate1D(double* samplePoints, double* sampleValues,
+        int sampleSize, double queryPoint)
+{
+    double queryValue;
+    if (queryPoint < samplePoints[0])
+    {
+        queryValue = sampleValues[0] + (sampleValues[1] - sampleValues[0]) 
+                * ((queryPoint - samplePoints[0]) / (samplePoints[1] 
+                            - samplePoints[0]));
+
+    } else if (queryPoint > samplePoints[sampleSize-1])
+    {
+        int end = sampleSize - 1;
+        queryValue = sampleValues[end] + (sampleValues[end] - sampleValues[end-1])
+                * (queryPoint - samplePoints[end-1]) / (samplePoints[end] 
+                            - samplePoints[end-1]);
+    } else
+    {
+        int lowIndex(0), highIndex(0);
+        for (int i = 0; i < sampleSize; i++)
+        {
+            if (queryPoint < samplePoints[i])
+            {
+                lowIndex = i - 1;
+                highIndex = i;
+                break;
+            }
+        }
+        queryValue = sampleValues[lowIndex] + (queryPoint - samplePoints[lowIndex])
+                * (sampleValues[highIndex] - sampleValues[lowIndex])
+                / (samplePoints[highIndex] - samplePoints[lowIndex]);
+    }
+    return queryValue;
+}
+
+double PhotonField::arrayIndex(double* samplePoints, double queryPoint,
+        int sampleSize)
+{
+    if (queryPoint < samplePoints[0] || queryPoint >
+            samplePoints[sampleSize-1])
+    {
+        std::cerr << "Error: Sample point out of bounds!" << std::endl;
+        exit(1);
+    }
+    double index(0);
+    for (int i = 0; i < sampleSize; i++)
+    {
+        if (samplePoints[i] > queryPoint)
+        {
+            index = (i - 1) + (queryPoint - samplePoints[i-1]) / 
+                    (samplePoints[i] - samplePoints[i-1]);
+            break;
+        }
+    }
+    return index;
+}
