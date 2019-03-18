@@ -22,7 +22,7 @@ public:
     G4VParticleChange* PostStepDoIt(const G4Track& aTrack,
             const G4Step& aStep) override;
 
-private:
+public:
 
     /* Returns the total cross-section for the breit wheeler process */
     double crossSection(double comEnergy);
@@ -33,10 +33,10 @@ private:
 
     /* Returns a photon energy sampled from the d_tau / d_energy. 
        uses a basic random dart approach. */
-    double samplePhotonEnergy(double gammaEnergy, gammaAngle);
+    double samplePhotonEnergy();
 
     /* Returns centre of mass energy for the interaction */ 
-    double sampleComEnergy();
+    double sampleComEnergy(double photonEnergy, double gammaEnergy);
 
     /* Returns an angle of the scattered pair in the COM frame with the 
        collision axis along */
@@ -50,7 +50,7 @@ private:
 
     /* Basic linear intepolation method in 1D */
     double interpolate1D(double* samplePoints, double* sampleValues,
-        int sampleSize, double queryPoint);
+            int sampleSize, double queryPoint);
 
     /* Method foc cacluating the array index. Returns a double by interpolating
        between the two closest indices. */

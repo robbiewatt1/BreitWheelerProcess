@@ -2,6 +2,8 @@
 #include "G4SystemOfUnits.hh"
 #include "G4PhysicalConstants.hh"
 #include "G4Gamma.hh"
+#include "G4Positron.hh"
+#include "G4Electron.hh"
 
 #include <cmath>
 
@@ -10,10 +12,10 @@ BreitWheeler::BreitWheeler(PhotonField* field, const G4String& name,
 G4VDiscreteProcess(name, type)
 {
     m_field = field;
-    m_rotatedIndex  = new int [m_field->getResolution()];
-    m_energyInt     = new double [m_field->getResolution()];
-    m_comEnergy*    = new double* [m_field->getResolution()];
-    m_comEnergyInt* = new double* [m_field->getResolution()];
+    m_rotatedIndex = new int [m_field->getResolution()];
+    m_energyInt    = new double [m_field->getResolution()];
+    m_comEnergy    = new double* [m_field->getResolution()];
+    m_comEnergyInt = new double* [m_field->getResolution()];
     for (int i = 0; i < m_field->getResolution(); i++)
     {
         m_comEnergy[i] = new double [m_field->getResolution()];
@@ -25,7 +27,7 @@ BreitWheeler::~BreitWheeler()
 {
     delete [] m_rotatedIndex;
     delete [] m_energyInt;
-    for (int i = 0; i < count; ++i)
+    for (int i = 0; i < m_field->getResolution(); i++)
     {
         delete [] m_comEnergy[i];
         delete [] m_comEnergyInt[i];
@@ -44,9 +46,10 @@ G4double BreitWheeler::GetMeanFreePath(const G4Track& track, G4double,
 {
     // The interacting particle properties
     const G4DynamicParticle *aDynamicGamma = track.GetDynamicParticle();
-    double gammaEnergy = aDynamicGamma->GetKineticEnergy();
-    double gammaAngle  = aDynamicGamma->GetMomentumDirection().
-            angle(G4ThreeVector(0, 0, 1));
+    double gammaEnergy = 1000;//aDynamicGamma->GetKineticEnergy();
+    double gammaAngle  = 0;//aDynamicGamma->GetMomentumDirection().
+            //angle(G4ThreeVector(0, 0, 1));
+    
 
     // The photon field properties
     int resolusion         = m_field->getResolution();
@@ -95,8 +98,8 @@ G4double BreitWheeler::GetMeanFreePath(const G4Track& track, G4double,
                     * electron_mass_c2);
             if (m_comEnergy[i][j] > 1.0)
             {
-                m_comEnergyInt[j] = crossSection(m_comEnergy[i][j])
-                    * photonDensity[i][rotatedIndex[j]] * m_comEnergy[i][j];
+                m_comEnergyInt[i][j] = crossSection(m_comEnergy[i][j])
+                    * photonDensity[i][m_rotatedIndex[j]] * m_comEnergy[i][j];
             } else
             {
                 m_comEnergyInt[i][j] = 0;
@@ -125,8 +128,91 @@ G4VParticleChange* BreitWheeler::PostStepDoIt(const G4Track& aTrack,
 {
     aParticleChange.Initialize(aTrack);
     const G4DynamicParticle *aDynamicGamma = aTrack.GetDynamicParticle();
-    double gammaEnergy = aDynamicGamma->GetKineticEnergy();
+    G4ThreeVector gammaMomentum = aDynamicGamma->GetMomentum();
+    double gammaEnergy     = aDynamicGamma->GetKineticEnergy();
+    double photonEnergy    = samplePhotonEnergy();
+    double comEnergy       = sampleComEnergy(photonEnergy, gammaEnergy);
+    double photonAngleThe  = std::acos(1.0 - 2.0 * electron_mass_c2
+            * electron_mass_c2 * comEnergy / (gammaEnergy * photonEnergy));
+    if (G4UniformRand() < 0.5) photonAngleThe += pi;
 
+    /* Find particles properties in the COM frame*/
+    double pairEnergy   = 0.5 * std::sqrt(comEnergy);
+    double pairMomentum = std::sqrt(pairEnergy * pairEnergy
+                - electron_mass_c2 * electron_mass_c2);    
+    double pairAngleThe = samplePairAngle(comEnergy);
+    double pairAnglePhi = std::acos(2.0 * G4UniformRand() - 1.0);
+    double pairPx = std::sin(pairAnglePhi) * std::cos(pairAngleThe)
+            * pairMomentum;
+    double pairPy = std::sin(pairAnglePhi) * std::sin(pairAngleThe)
+            *pairMomentum;
+    double pairPz = std::cos(pairAnglePhi) * pairMomentum;
+    G4ThreeVector electronMomentum = G4ThreeVector(pairPx, pairPy, pairPz);
+    G4ThreeVector positronMomentum = G4ThreeVector(-pairPx, -pairPy, -pairPz);
+
+    /* Apply lorentz transform into rorated lab frame */
+    double lorentzFact = (photonEnergy + gammaEnergy) / std::sqrt(comEnergy);
+    double electronEnergy = lorentzFact * pairEnergy + std::sqrt(lorentzFact
+            * lorentzFact - 1.0) * electronMomentum[2];
+    double positronEnergy = lorentzFact * pairEnergy + std::sqrt(lorentzFact
+            * lorentzFact - 1.0) * positronMomentum[2];
+    electronMomentum[2] = std::sqrt(lorentzFact * lorentzFact - 1.0)
+            * pairEnergy + lorentzFact * electronMomentum[2];
+    positronMomentum[2] = std::sqrt(lorentzFact * lorentzFact - 1.0)
+            * pairEnergy + lorentzFact * positronMomentum[2];
+
+    std::cout << electronEnergy << std::endl;
+    std::cout << positronEnergy << std::endl;
+
+    /* Apply rotation into frame with gamma along z axis */
+    double thetaGamma = std::atan(photonEnergy * std::sin(photonAngleThe)
+                / (gammaEnergy + photonEnergy * std::cos(photonAngleThe)));
+    electronMomentum[0] = std::cos(thetaGamma) * electronMomentum[0]
+            - std::sin(thetaGamma) * electronMomentum[2];
+    positronMomentum[0] = std::cos(thetaGamma) * positronMomentum[0]
+            - std::sin(thetaGamma) * positronMomentum[2];
+    electronMomentum[2] = std::sin(thetaGamma) * electronMomentum[0]
+            + std::cos(thetaGamma) * electronMomentum[2];
+    positronMomentum[2] = std::sin(thetaGamma) * positronMomentum[0]
+            + std::cos(thetaGamma) * positronMomentum[2];
+
+    /* Apply final rotation into simulation frame */
+    double thetaLabXZ = - std::atan(gammaMomentum[0] / gammaMomentum[2]);
+    double thetaLabYZ = std::atan(gammaMomentum[1] / gammaMomentum[2] *
+            std::sqrt(1 + gammaMomentum[0] * gammaMomentum[0]
+                / (gammaMomentum[2] * gammaMomentum[2])));
+    electronMomentum[0] = std::cos(thetaLabXZ) * electronMomentum[0]
+            - std::sin(thetaLabXZ) * (- std::sin(thetaLabYZ)
+                * electronMomentum[1] + std::cos(thetaLabYZ)
+                * electronMomentum[2]);
+    positronMomentum[0] = std::cos(thetaLabXZ) * positronMomentum[0]
+            - std::sin(thetaLabXZ) * (- std::sin(thetaLabYZ)
+                * positronMomentum[1] + std::cos(thetaLabYZ)
+                * positronMomentum[2]);
+    electronMomentum[1] = std::cos(thetaLabYZ) * electronMomentum[1]
+            + std::sin(thetaLabYZ) * electronMomentum[2];
+    positronMomentum[1] = std::cos(thetaLabYZ) * positronMomentum[1]
+            + std::sin(thetaLabYZ) * positronMomentum[2];
+    electronMomentum[2] = std::sin(thetaLabXZ) * electronMomentum[0]
+            + std::cos(thetaLabXZ) * (- std::sin(thetaLabYZ)
+                * electronMomentum[1] + std::cos(thetaLabYZ)
+                * electronMomentum[2]);
+    positronMomentum[2] = std::sin(thetaLabXZ) * positronMomentum[0]
+            + std::cos(thetaLabXZ) * (- std::sin(thetaLabYZ)
+                * positronMomentum[1] + std::cos(thetaLabYZ)
+                * positronMomentum[2]);
+
+    /* Add new electron and positron and kill the gamma ray */
+    G4DynamicParticle* electron = new G4DynamicParticle(
+            G4Electron::Electron(), electronMomentum, electronEnergy);            
+    G4DynamicParticle* positron = new G4DynamicParticle(
+        G4Positron::Positron(), positronMomentum, positronEnergy);
+    aParticleChange.SetNumberOfSecondaries(2);
+    aParticleChange.AddSecondary(electron);
+    aParticleChange.AddSecondary(positron);
+    aParticleChange.ProposeMomentumDirection(G4ThreeVector(0,0,0));
+    aParticleChange.ProposeEnergy(0.);
+    aParticleChange.ProposeTrackStatus(fStopAndKill);
     return G4VDiscreteProcess::PostStepDoIt(aTrack, aStep);
 }
 
@@ -147,13 +233,12 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
             - beta * beta * beta * beta - beta * beta * beta * beta
             * sinT * sinT * sinT * sinT) / ((1.0 - beta * beta * cosT * cosT)
             * (1.0 - beta * beta * cosT * cosT));
-
 }
 
- double BreitWheeler::samplePhotonEnergy(double gammaEnergy, gammaAngle)
+ double BreitWheeler::samplePhotonEnergy()
  {
-    double maxDensity = std::max_element(m_energyInt,
-            &m_energyInt[m_field->getResolution-1]);
+    double maxDensity = *(std::max_element(m_energyInt, 
+            &m_energyInt[m_field->getResolution()-1]));
     double randEnergy;
     double randDensity;
     double photonDensity;
@@ -165,22 +250,21 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
         photonDensity = interpolate1D(m_field->getEnergy(), m_energyInt,
                 m_field->getResolution(), randEnergy);
 
-    } while (randDensity > photonDensity)
+    } while (randDensity > photonDensity);
     return randEnergy;
 }
 
-double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy, 
-        double gammaAngle)
+double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy)
 {
-    double energyIndex = arrayIndex(m_field->getEnergy(), photonEnergy,
-            m_field->getResolution);
-    int lowIndex  = energyIndex;
-    double fracIndex = energyIndex - lowIndex;
+    double fracIndex = arrayIndex(m_field->getEnergy(), photonEnergy,
+            m_field->getResolution());
+    int index  = fracIndex;
+    double frac = fracIndex - index;
 
     double maxCon = photonEnergy * gammaEnergy / (electron_mass_c2
                 * electron_mass_c2);
-    double maxDensity = std::max_element(m_comEnergyInt[highIndex],
-            &m_comEnergyInt[highIndex][m_field->getResolution-1]);
+    double maxDensity = *(std::max_element(m_comEnergyInt[index],
+            &m_comEnergyInt[index][m_field->getResolution()/2]));
     double randCom;
     double randDensity;
     double comDensity;
@@ -188,11 +272,11 @@ double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy,
     {
         randCom = 1.0 + (maxCon - 1.0) * G4UniformRand();
         randDensity = maxDensity * G4UniformRand();
-        comDensity = (1.0 - fracIndex) * interpolate1D(m_comEnergy[lowIndex],
-                m_comEnergyInt[lowIndex], m_field->getResolution(), randCom)
-            * (fracIndex) * interpolate1D(m_comEnergy[highIndex],
-                m_comEnergyInt[highIndex], m_field->getResolution(), randCom);
-    } while (randDensity > comDensity)
+        comDensity = (1.0 - frac) * interpolate1D(m_comEnergy[index],
+                m_comEnergyInt[index], m_field->getResolution()/2, randCom)
+            + (frac) * interpolate1D(m_comEnergy[index+1],
+                m_comEnergyInt[index+1], m_field->getResolution()/2, randCom);
+    } while (randDensity > comDensity);
     return randCom;
 }
 
@@ -202,13 +286,12 @@ double BreitWheeler::samplePairAngle(double comEnergy)
     double randAngle;
     double randDensity;
     double angleDensity;
-
     do
     {
         randAngle    = G4UniformRand() * 2.0 * pi;
         randDensity  = G4UniformRand() * maxDensity;
         angleDensity = diffCrossSection(comEnergy, randAngle);
-    } while (randDensity > angleDensity)
+    } while (randDensity > angleDensity);
     return randAngle;
 }
 
@@ -224,8 +307,7 @@ double BreitWheeler::samplePairAngle(double comEnergy)
     return result;
  }
 
- 
-double PhotonField::interpolate1D(double* samplePoints, double* sampleValues,
+double BreitWheeler::interpolate1D(double* samplePoints, double* sampleValues,
         int sampleSize, double queryPoint)
 {
     double queryValue;
@@ -260,7 +342,7 @@ double PhotonField::interpolate1D(double* samplePoints, double* sampleValues,
     return queryValue;
 }
 
-double PhotonField::arrayIndex(double* samplePoints, double queryPoint,
+double BreitWheeler::arrayIndex(double* samplePoints, double queryPoint,
         int sampleSize)
 {
     if (queryPoint < samplePoints[0] || queryPoint >

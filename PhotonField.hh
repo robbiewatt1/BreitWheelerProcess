@@ -28,7 +28,7 @@ public:
 
     double** getDensity() const {return m_density;}
 
-    double getMaxEnergy() const {return m_energy[resolution-1];}
+    double getMaxEnergy() const {return m_energy[m_resolution-1];}
 
     double getMinEnergy() const {return m_energy[0];}
 
