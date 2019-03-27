@@ -1,5 +1,5 @@
 #include "PhotonField.hh"
-#include "BreitWheeler.hh"
+#include "BreitWheelerGP.hh"
 #include "G4Track.hh"
 #include <iostream>
 #include <fstream>
@@ -8,7 +8,7 @@
 int main(int argc, char* argv[])
 {
 	PhotonField* field = new PhotonField(0.001, 0.00001, 0.02);
-	BreitWheeler* process = new BreitWheeler(field);
+	BreitWheelerGP* process = new BreitWheelerGP(field);
 	G4Track a;
 	G4double b;
 	G4ForceCondition* c;

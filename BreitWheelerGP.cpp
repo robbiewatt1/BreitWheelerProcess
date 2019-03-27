@@ -1,4 +1,4 @@
-#include "BreitWheeler.hh"
+#include "BreitWheelerGP.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4PhysicalConstants.hh"
 #include "G4Gamma.hh"
@@ -8,41 +8,46 @@
 #include <cmath>
 #include <fstream>
 
-BreitWheeler::BreitWheeler(PhotonField* field, const G4String& name,
+BreitWheelerGP::BreitWheelerGP(PhotonField* field, const G4String& name,
         G4ProcessType type):
-G4VDiscreteProcess(name, type)
+G4VDiscreteProcess(name, type), trainCount(0)
 {
     m_field = field;
-    m_rotatedIndex = new int [m_field->getResolution()];
-    m_energyInt    = new double [m_field->getResolution()];
-    m_comEnergy    = new double* [m_field->getResolution()];
-    m_comEnergyInt = new double* [m_field->getResolution()];
-    for (int i = 0; i < m_field->getResolution(); i++)
-    {
-        m_comEnergy[i] = new double [m_field->getResolution()];
-        m_comEnergyInt[i] = new double [m_field->getResolution()];
-    }
+    m_gp_optimiser.init();
+    Eigen::VectorXd params(m_gp_gausProc.covf().get_param_dim());
+    params << -1, -1, -1;
+    m_gp_gausProc.covf().set_loghyper(params);
 }
 
-BreitWheeler::~BreitWheeler()
+BreitWheelerGP::~BreitWheelerGP()
 {
-    delete [] m_rotatedIndex;
-    delete [] m_energyInt;
-    for (int i = 0; i < m_field->getResolution(); i++)
+    if (m_gp_save == true)
     {
-        delete [] m_comEnergy[i];
-        delete [] m_comEnergyInt[i];
+        m_gp_gausProc.write("./load.gp");
     }
-    delete [] m_comEnergy;
-    delete [] m_comEnergyInt;
+    delete [] m_gp_input;
+    delete [] m_gp_mfp;
 }
 
-G4bool BreitWheeler::IsApplicable(const G4ParticleDefinition& particle)
+G4bool BreitWheelerGP::IsApplicable(const G4ParticleDefinition& particle)
 {
     return (&particle == G4Gamma::Gamma());
 }
 
-G4double BreitWheeler::GetMeanFreePath(const G4Track& track, G4double,
+void BreitWheelerGP::setParamsGP(bool save, int trainSize, double errorMax)
+{
+    m_gp_save = save;
+    m_gp_trainSize = trainSize;
+    m_gp_errorMax = errorMax;
+    m_gp_input = new double* [trainSize];
+    for (int i = 0; i < trainSize; ++i)
+    {
+        m_gp_input[i] = new double [3];
+    }
+    m_gp_mfp = new double [trainSize];
+}
+
+G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
          G4ForceCondition*)
 {
     G4Material* aMaterial = track.GetMaterial();
@@ -53,76 +58,117 @@ G4double BreitWheeler::GetMeanFreePath(const G4Track& track, G4double,
     const G4DynamicParticle *aDynamicGamma = track.GetDynamicParticle();
     double gammaEnergy = aDynamicGamma->GetKineticEnergy();
     G4ThreeVector gammaDirection = aDynamicGamma->GetMomentumDirection();
- //   double gammaTheat = std::acos(gammaDirection[2]);
- //   double gammaPhi   = std::atan(gammaDirection[1] / gammaDirection[0]);
-  
-    /* Find the roation matricies that rotate the gamma ray onto
-       the z axis and return the gamma ray back */
-    G4ThreeVector rotationAxis = gammaDirection.
-            cross(G4ThreeVector(0, 0, 1)).unit();
-    double rotationAngle = gammaDirection.angle(G4ThreeVector(0, 0, 1)); 
-    G4RotationMatrix m_rotateForward = G4RotationMatrix(m_rotationAxis,
-            m_rotationAngle);
-    G4RotationMatrix m_rotateBackward = G4RotationMatrix(m_rotationAxis,
-            m_rotationAngle);
+    double thetaPrime = std::acos(gammaDirection[2]);
+    double phiPrime   = std::atan(gammaDirection[1] / gammaDirection[0]);
 
-    /* Get the photon field properties */
-    int resolusion          = m_field->getResolution();
-    double* photonEnergy    = m_field->getEnergy();
-    double* photonTheta     = m_field->getTheta();
-    double* photonPhi       = m_field->getTheta();
-    double*** photonDensity = m_field->getDensity();
 
-    double* energyInt = new double [resolusion];
-    double* comInt    = new double [resolusion];
-    double* comAxis   = new double [resolusion];
-    double* phiInt    = new double [resolusion];
-    // Integral over photon energy epsilon
-    for (int i = 0; i < resolusion; i++)
+    /* Generate input for GP with close to normalised values */
+    double input[] = {gammaEnergy / 1e3, thetaPrime / (2.0 * pi),
+            phiPrime / pi};
+    double variance = m_gp_gausProc.var(input);
+    double meanPath;
+
+    if (variance < m_gp_errorMax)
+    {  
+        /* We use the regressed value from the GP. Need to convert 
+           the mean free path back to proper units */
+        meanPath = std::pow(10.0, (100 * m_gp_gausProc.f(input)));
+    } else
     {
-        // Integrate over s
-        for (int j = 0; j < resolusion; j++)
-        {
-            // Integrate over phi
-            for (int k = 0; k < resolusion; k++)
-            {
-                int[2] indexPrimne = RotateThetaPhi(photonTheta[j], photonPhi[k],
-                        photonTheta, photonPhi, resolusion, resolusion);
-                phiInt[k] = photonDensity[i][indexPrimne[0]][indexPrimne[1]];
-            }
+        /* We use the slow full method of integration */
 
-            comEnergy[j] = photonEnergy[i] * gammaEnergy * (1.0 - 
-                    std::cos(photonAngle[j])) / (electron_mass_c2 
-                    * electron_mass_c2);
-            if (comEnergy[j] > 1.0)
+        /* Find the roation matricies that rotate the gamma ray onto
+           the z axis and return the gamma ray back */
+        G4ThreeVector rotationAxis = gammaDirection.
+                cross(G4ThreeVector(0, 0, 1)).unit();
+        double rotationAngle = gammaDirection.angle(G4ThreeVector(0, 0, 1)); 
+        m_rotateForward = G4RotationMatrix(rotationAxis,
+                rotationAngle);
+
+        /* Get the photon field properties */
+        int resolusion          = m_field->getResolution();
+        double* photonEnergy    = m_field->getEnergy();
+        double* photonTheta     = m_field->getTheta();
+        double* photonPhi       = m_field->getPhi();
+        double*** photonDensity = m_field->getDensity();
+
+        double* energyInt = new double [resolusion];
+        double* comInt    = new double [resolusion];
+        double* comAxis   = new double [resolusion];
+        double* phiInt    = new double [resolusion];
+        // Integral over photon energy epsilon
+        for (int i = 0; i < resolusion; i++)
+        {
+            // Integrate over s
+            for (int j = 0; j < resolusion; j++)
             {
-                comEnergyInt[j] = crossSection(comEnergy[j]) 
-                        * comEnergy[j] * trapezium(photonPhi, phiInt,
-                            resolusion);
+                // Integrate over phi
+                for (int k = 0; k < resolusion; k++)
+                {
+                    int thetaIndex, phiIndex;
+                    RotateThetaPhi(photonTheta[j], photonPhi[k], thetaIndex,
+                            phiIndex);
+                    phiInt[k] = photonDensity[i][thetaIndex][phiIndex];
+                }
+
+                comAxis[j] = photonEnergy[i] * gammaEnergy * (1.0 - 
+                        std::cos(photonTheta[j])) / (electron_mass_c2 
+                        * electron_mass_c2);
+                if (comAxis[j] > 1.0)
+                {
+                    comInt[j] = crossSection(comAxis[j]) 
+                            * comAxis[j] * trapezium(photonPhi, phiInt,
+                                resolusion);
+                } else
+                {
+                    comInt[j] = 0;
+                }
+            }
+            if (photonEnergy[i] > electron_mass_c2 * electron_mass_c2 
+                    / gammaEnergy)
+            {
+                energyInt[i] = trapezium(comAxis, comInt, 
+                        resolusion) / (photonEnergy[i] * photonEnergy[i]);
             } else
             {
-                comEnergyInt[j] = 0;
+                energyInt[i] = 0;
             }
         }
-        if (photonEnergy[i] > electron_mass_c2 * electron_mass_c2 
-                / gammaEnergy)
-        {
-            energyInt[i] = trapezium(comEnergy, comEnergyInt, 
-                    resolusion) / (photonEnergy[i] * photonEnergy[i]);
-        } else
-        {
-            energyInt[i] = 0;
-        }
+        meanPath = gammaEnergy * gammaEnergy / (trapezium(photonEnergy,
+                energyInt, resolusion) * pi * classic_electr_radius
+                * classic_electr_radius * electron_mass_c2 * electron_mass_c2);
+
+        /* add the new point to the training set, These are roughly normilised
+           to the maximum values expected */
+        m_gp_input [trainCount][0] = gammaEnergy / 1000;
+        m_gp_input [trainCount][1] = thetaPrime / (2.0 * pi);
+        m_gp_input [trainCount][2] = phiPrime / pi;
+        m_gp_mfp[trainCount] = std::log10(meanPath) / 100;
+        trainCount++;
+
+        delete [] energyInt;
+        delete [] comInt;
+        delete [] comAxis;
+        delete [] phiInt;
     }
-    double meanPath = gammaEnergy * gammaEnergy / 
-            (trapezium(photonEnergy, energyInt, resolusion) * pi 
-                * classic_electr_radius * classic_electr_radius
-                * electron_mass_c2 * electron_mass_c2);
+
+    /* Check if we need to carry out the training again */
+    if(trainCount == m_gp_trainSize)
+    {
+        for (int i = 0; i < m_gp_trainSize; i++)
+        {
+            double input[] = {m_gp_input[i][0], m_gp_input[i][1],
+                    m_gp_input[i][2]};
+            m_gp_gausProc.add_pattern(input, m_gp_mfp[trainCount]);
+        }
+        m_gp_optimiser.maximize(&m_gp_gausProc, 50, 0);
+        trainCount = 0;
+    }
     return meanPath;
 }
 
 
-G4VParticleChange* BreitWheeler::PostStepDoIt(const G4Track& aTrack,
+G4VParticleChange* BreitWheelerGP::PostStepDoIt(const G4Track& aTrack,
         const G4Step& aStep)
 {
     /*
@@ -186,8 +232,9 @@ G4VParticleChange* BreitWheeler::PostStepDoIt(const G4Track& aTrack,
             + std::cos(photonAnglePhi) * electronMomentum[1];            
     positronMomentum[1] = - std::sin(photonAnglePhi) * positronMomentum[0]
             + std::cos(photonAnglePhi) * positronMomentum[1];
-
+    */
     /* Apply final rotation into simulation frame */
+
 /*
     double thetaLabXZ = - std::atan(gammaMomentum[0] / gammaMomentum[2]);
     double thetaLabYZ = std::atan(gammaMomentum[1] / gammaMomentum[2] *
@@ -230,7 +277,7 @@ G4VParticleChange* BreitWheeler::PostStepDoIt(const G4Track& aTrack,
     */
 }
 
-double BreitWheeler::crossSection(double comEnergy)
+double BreitWheelerGP::crossSection(double comEnergy)
 {
     double beta = std::sqrt(1.0 - 1.0 / comEnergy);
     return (1.0 - beta * beta) * ((3.0 - beta * beta * beta * beta)
@@ -238,7 +285,7 @@ double BreitWheeler::crossSection(double comEnergy)
             * (2.0 - beta * beta));
 }
 
-double BreitWheeler::diffCrossSection(double comEnergy, double theta)
+double BreitWheelerGP::diffCrossSection(double comEnergy, double theta)
 {
     double beta = std::sqrt(1.0 - 1.0 / comEnergy);
     double sinT = std::sin(theta);
@@ -249,8 +296,9 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
             * (1.0 - beta * beta * cosT * cosT));
 }
 
- double BreitWheeler::samplePhotonEnergy()
+ double BreitWheelerGP::samplePhotonEnergy()
  {
+    /*
     double maxDensity = *(std::max_element(m_energyInt, 
             &m_energyInt[m_field->getResolution()-1]));
     double randEnergy;
@@ -266,10 +314,12 @@ double BreitWheeler::diffCrossSection(double comEnergy, double theta)
 
     } while (randDensity > photonDensity);
     return randEnergy;
+*/
 }
 
-double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy)
+double BreitWheelerGP::sampleComEnergy(double photonEnergy, double gammaEnergy)
 {
+    /*
     double fracIndex = arrayIndex(m_field->getEnergy(), photonEnergy,
             m_field->getResolution());
     int index  = fracIndex;
@@ -292,9 +342,10 @@ double BreitWheeler::sampleComEnergy(double photonEnergy, double gammaEnergy)
                 m_comEnergyInt[index+1], m_field->getResolution(), randCom);
     } while (randDensity > comDensity);
     return randCom;
+*/
 }
 
-double BreitWheeler::samplePairAngle(double comEnergy)
+double BreitWheelerGP::samplePairAngle(double comEnergy)
 {
     double maxDensity = diffCrossSection(comEnergy, 2.0 * pi);
     double randAngle;
@@ -309,7 +360,7 @@ double BreitWheeler::samplePairAngle(double comEnergy)
     return randAngle;
 }
 
- double BreitWheeler::trapezium(double* variable, double* integrand,
+ double BreitWheelerGP::trapezium(double* variable, double* integrand,
         int resolusion)
  {
     double result(0);
@@ -321,7 +372,7 @@ double BreitWheeler::samplePairAngle(double comEnergy)
     return result;
  }
 
-double BreitWheeler::interpolate1D(double* samplePoints, double* sampleValues,
+double BreitWheelerGP::interpolate1D(double* samplePoints, double* sampleValues,
         int sampleSize, double queryPoint)
 {
     double queryValue;
@@ -356,7 +407,7 @@ double BreitWheeler::interpolate1D(double* samplePoints, double* sampleValues,
     return queryValue;
 }
 
-double BreitWheeler::arrayIndex(double* samplePoints, double queryPoint,
+double BreitWheelerGP::arrayIndex(double* samplePoints, double queryPoint,
         int sampleSize)
 {
     if (queryPoint < samplePoints[0] || queryPoint >
@@ -378,18 +429,18 @@ double BreitWheeler::arrayIndex(double* samplePoints, double queryPoint,
     return index;
 }
 
-int* RotateThetaPhi(double theta, double phi, double* thetaAxis,
-        double* phiAxis, int thetaResolusion, phiResolusion);
+void BreitWheelerGP::RotateThetaPhi(double theta, double phi, int thetaIndex,
+        int phiIndex)
 {
     // find components in cartesian
     G4ThreeVector vector = G4ThreeVector(std::sin(theta) * std::cos(phi),
             std::sin(theta) * std::sin(phi), std::cos(theta));
-    G4ThreeVector vectorPrime = m_rotationMatrix(vector1);
-    double thetaPrime = std::acos(vector2[2]);
-    double phiPrime   = std::atan(vector2[1] / vector2[0]);
+    G4ThreeVector vectorPrime = m_rotateForward(vector);
+    double thetaPrime = std::acos(vectorPrime[2]);
+    double phiPrime   = std::atan(vectorPrime[1] / vectorPrime[0]);
 
-    int[2] index = {arrayIndex(thetaAxis, thetaPrime, thetaResolusion),
-            arrayIndex(phiaAxis, phiPrime, phiResolusion)}
-
-    return index;
+    thetaIndex = arrayIndex(m_field->getTheta(), thetaPrime,
+            m_field->getResolution());
+    phiIndex   = arrayIndex(m_field->getPhi(), phiPrime,
+            m_field->getResolution());
 }

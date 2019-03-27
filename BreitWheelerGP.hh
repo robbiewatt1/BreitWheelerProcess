@@ -1,19 +1,28 @@
-#ifndef BREITWHEELER_HH
-#define BREITWHEELER_HH
+#ifndef BreitWheelerGP_HH
+#define BreitWheelerGP_HH
 
 #include "G4VDiscreteProcess.hh"
 #include "PhotonField.hh"
 
-class BreitWheeler: public G4VDiscreteProcess
+#include "gp.h"
+#include "gp_utils.h"
+#include "rprop.h"
+#include <Eigen/Dense>
+
+
+class BreitWheelerGP: public G4VDiscreteProcess
 {
 public:
-    explicit BreitWheeler(PhotonField* field,
-        const G4String& name = "BreitWheeler",
+    explicit BreitWheelerGP(PhotonField* field,
+        const G4String& name = "BreitWheelerGP",
         G4ProcessType type = fUserDefined);
 
-    ~BreitWheeler() override;
+    ~BreitWheelerGP() override;
 
     G4bool IsApplicable(const G4ParticleDefinition& particle);
+
+    /* Method to set the paramters used by the gaussian process */
+    void setParamsGP(bool save, int trainSize, double errorMax);
 
     /* Method to caculate the mean free path for interacting gamma. */
     G4double GetMeanFreePath(const G4Track& track, G4double, 
@@ -21,6 +30,7 @@ public:
 
     G4VParticleChange* PostStepDoIt(const G4Track& aTrack,
             const G4Step& aStep) override;
+
 
 public:
 
@@ -45,8 +55,8 @@ public:
     /* The following method takes in a theta a phi value in the roated frame
        and gives back the index of the theta and phi in the old frame. The
        return value is an 2 element array of ints */
-    int* RotateThetaPhi(double theta, double phi, double* thetaAxis,
-        double* phiAxis, int thetaResolusion, int phiResolusion)
+    void RotateThetaPhi(double theta, double phi, int thetaIndex,
+            int phiIndex);
     /* The following functions are basic numerical methods used in calculating 
        tec cross-section and properties of the electron / positron producsts */
 
@@ -65,9 +75,18 @@ private:
     PhotonField* m_field;          // Photon field which gamma interacts with
     G4RotationMatrix m_rotateForward;  // Axis to rotate gamma to z axis
     G4RotationMatrix m_rotateBackward;        // Angle to rate gamma to z axis 
-    int* m_rotatedIndex;           // index array for rotated photon distrobution
-    double** m_comEnergy;          // center of mass energy squared array
-    double** m_comEnergyInt;       // centre of mass integrand    
-    double* m_energyInt;           // Integrand to be integrated over energy
+
+    // Meber data for GP which has to be defined here annoyingly
+    libgp::GaussianProcess m_gp_gausProc =
+        libgp::GaussianProcess(3, "CovSum ( CovSEiso, CovNoise)");
+    libgp::RProp m_gp_optimiser; // Class to optimise GP
+    bool m_gp_on;   // bool setting if GP is to be used
+    bool m_gp_save;  // bool setting if GP will be saved
+    double** m_gp_input;  // Training energy for the GP
+    double* m_gp_mfp;       // Training mfp for the GP
+    int m_gp_trainSize;     // The number of data points which is trained
+    double m_gp_errorMax;   // Max error before full method is used.
+    int trainCount;         // count giving points in training set
+
 };
 #endif
