@@ -9,7 +9,7 @@ public:
     /* Constructor to generate a thermal isotropic field field. All input 
        paramters should be given in MeV mm ns. */
     PhotonField(double temp, double energyMin, double energyMax,
-            int resolution = 1000);
+            int resolution = 200);
 
     /* Constructor to generate a photon field from a file. The energy axis
        should be in MeV and the density axis in mm^-3 MeV^-1 */
@@ -24,9 +24,11 @@ public:
 
     double* getEnergy() const {return m_energy;}
 
-    double* getAngle() const {return m_angle;}
+    double* getTheta() const {return m_theta;}
 
-    double** getDensity() const {return m_density;}
+    double* getPhi() const {return m_phi;}
+
+    double*** getDensity() const {return m_density;}
 
     double getMaxEnergy() const {return m_energy[m_resolution-1];}
 
@@ -42,16 +44,11 @@ private:
         temperature should be given in MeV. */
     void thermalField(double temp);
 
-    /* First order 1D intepolation method, samplePoints and sampleValues are 
-       the know points and values and queryPoint is where data is wanted. This
-       method is used to get fields are on the required grid. */
-    double interpolate1D(double* samplePoints, double* sampleValues,
-            int sampleSize, double queryPoint);
-
 private:
     double* m_energy;
-    double* m_angle;
-    double** m_density;
+    double* m_theta;
+    double* m_phi;
+    double*** m_density;
     int     m_resolution;
 };
 #endif

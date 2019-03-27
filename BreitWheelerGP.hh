@@ -22,7 +22,8 @@ public:
     G4VParticleChange* PostStepDoIt(const G4Track& aTrack,
             const G4Step& aStep) override;
 
-private:
+public:
+
     /* Returns the total cross-section for the breit wheeler process */
     double crossSection(double comEnergy);
 
@@ -41,6 +42,11 @@ private:
        collision axis along */
     double samplePairAngle(double comEnergy);
 
+    /* The following method takes in a theta a phi value in the roated frame
+       and gives back the index of the theta and phi in the old frame. The
+       return value is an 2 element array of ints */
+    int* RotateThetaPhi(double theta, double phi, double* thetaAxis,
+        double* phiAxis, int thetaResolusion, int phiResolusion)
     /* The following functions are basic numerical methods used in calculating 
        tec cross-section and properties of the electron / positron producsts */
 
@@ -56,10 +62,12 @@ private:
     double arrayIndex(double* samplePoints, double queryPoint, int sampleSize);
 
 private:
-    PhotonField* m_field;    // Photon field which gamma interacts with
-    int* m_rotatedIndex;     // index array for rotated photon distrobution
-    double** m_comEnergy;    // center of mass energy squared array
-    double** m_comEnergyInt; // centre of mass integrand    
-    double* m_energyInt;     // Integrand to be integrated over energy
+    PhotonField* m_field;          // Photon field which gamma interacts with
+    G4RotationMatrix m_rotateForward;  // Axis to rotate gamma to z axis
+    G4RotationMatrix m_rotateBackward;        // Angle to rate gamma to z axis 
+    int* m_rotatedIndex;           // index array for rotated photon distrobution
+    double** m_comEnergy;          // center of mass energy squared array
+    double** m_comEnergyInt;       // centre of mass integrand    
+    double* m_energyInt;           // Integrand to be integrated over energy
 };
 #endif
