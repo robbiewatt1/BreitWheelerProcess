@@ -41,6 +41,12 @@ public:
        used for sampling output energies */
     double diffCrossSection(double comEnergy, double theta);
 
+    /* Samples paramters from the photon field for a photon that interacts
+       with the gamma ray. Returns the photons energy, COM energy of the
+       interaction and the angle perpindicular to the interaction */
+    void SamplePhotonField(double photonEnergy, double comEnergy,
+            double photonPhi);
+
     /* Returns a photon energy sampled from the d_tau / d_energy. 
        uses a basic random dart approach. */
     double samplePhotonEnergy();
@@ -72,21 +78,21 @@ public:
     double arrayIndex(double* samplePoints, double queryPoint, int sampleSize);
 
 private:
-    PhotonField* m_field;          // Photon field which gamma interacts with
+    PhotonField* m_field;              // Photon field which gamma interacts with
     G4RotationMatrix m_rotateForward;  // Axis to rotate gamma to z axis
-    G4RotationMatrix m_rotateBackward;        // Angle to rate gamma to z axis 
+    G4RotationMatrix m_rotateBackward; // Angle to rate gamma to z axis
 
     // Meber data for GP which has to be defined here annoyingly
     libgp::GaussianProcess m_gp_gausProc =
         libgp::GaussianProcess(3, "CovSum ( CovSEiso, CovNoise)");
     libgp::RProp m_gp_optimiser; // Class to optimise GP
-    bool m_gp_on;   // bool setting if GP is to be used
-    bool m_gp_save;  // bool setting if GP will be saved
-    double** m_gp_input;  // Training energy for the GP
+    bool m_gp_switch;       // bool forcing full calculaation first run
+    bool m_gp_on;           // bool setting if GP is to be used
+    bool m_gp_save;         // bool setting if GP will be saved
+    double** m_gp_input;    // Training energy for the GP
     double* m_gp_mfp;       // Training mfp for the GP
     int m_gp_trainSize;     // The number of data points which is trained
     double m_gp_errorMax;   // Max error before full method is used.
-    int trainCount;         // count giving points in training set
-
+    int m_trainCount;       // count giving points in training set
 };
 #endif

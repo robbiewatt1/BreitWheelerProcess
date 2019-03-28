@@ -22,7 +22,7 @@ FIND_PACKAGE(Eigen3 3.0.1 REQUIRED)
 # ----- Add include directories -----
 
 include(${Geant4_USE_FILE})
-include_directories( ${EIGEN3_INCLUDE_DIR} /home/robbie/Documents/libGP/libgp/include)
+include_directories( ${EIGEN3_INCLUDE_DIR} /home/robbie/CppLibs/libgp/include)
 
 
 
@@ -31,4 +31,4 @@ file(GLOB headers ${PROJECT_SOURCE_DIR}/*.hh)
 
 #
 add_executable(BWT BreitWheelerTest.cpp ${sources} ${headers})
-target_link_libraries(BWT ${Geant4_LIBRARIES} /home/robbie/Documents/libGP/libgp/libgp.a)
+target_link_libraries(BWT ${Geant4_LIBRARIES} /home/robbie/CppLibs/libgp/libgp.a)

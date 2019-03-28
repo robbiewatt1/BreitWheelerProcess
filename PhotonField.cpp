@@ -20,9 +20,9 @@ m_resolution(resolution)
     double phiDelta  = pi / m_resolution;
     for (int i = 0; i < m_resolution; i++)
     {
-        m_theta[i]    = i * thetaDelta;
-        m_phi[i]      = i * phiDelta;
-        m_energy[i] = i * energyDelta + energyMin;
+        m_theta[i]   = i * thetaDelta;
+        m_phi[i]     = i * phiDelta;
+        m_energy[i]  = i * energyDelta + energyMin;
         m_density[i] = new double* [m_resolution];
         for (int j = 0; j < m_resolution; j++)
         {
@@ -101,7 +101,7 @@ void PhotonField::thermalField(double temp)
     {
         for (int j = 0; j < m_resolution; j++)
         {
-            for (int k = 0; j < m_resolution; k++)
+            for (int k = 0; k < m_resolution; k++)
             {            
                 m_density[i][j][k] = 1.0 / (hbar_Planck * hbar_Planck
                     * hbar_Planck * c_light * c_light * c_light * pi * pi)

@@ -10,7 +10,7 @@
 
 BreitWheelerGP::BreitWheelerGP(PhotonField* field, const G4String& name,
         G4ProcessType type):
-G4VDiscreteProcess(name, type), trainCount(0)
+G4VDiscreteProcess(name, type), m_trainCount(0), m_gp_switch(false)
 {
     m_field = field;
     m_gp_optimiser.init();
@@ -50,6 +50,7 @@ void BreitWheelerGP::setParamsGP(bool save, int trainSize, double errorMax)
 G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
          G4ForceCondition*)
 {
+
     G4Material* aMaterial = track.GetMaterial();
     if(aMaterial->GetMaterialPropertiesTable()->GetConstProperty("Radiation")
             < 0.0) return 1e99;
@@ -58,30 +59,29 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
     const G4DynamicParticle *aDynamicGamma = track.GetDynamicParticle();
     double gammaEnergy = aDynamicGamma->GetKineticEnergy();
     G4ThreeVector gammaDirection = aDynamicGamma->GetMomentumDirection();
-    double thetaPrime = std::acos(gammaDirection[2]);
-    double phiPrime   = std::atan(gammaDirection[1] / gammaDirection[0]);
+    double gammaPhi = std::acos(gammaDirection[2]);
+    double gammaTheta = std::atan(gammaDirection[1] / (gammaDirection[0] + 1e-99));
+    gammaTheta = gammaTheta < 0 ? 2 * pi + gammaTheta : gammaTheta;
 
-
-    /* Generate input for GP with close to normalised values */
-    double input[] = {gammaEnergy / 1e3, thetaPrime / (2.0 * pi),
-            phiPrime / pi};
+    /* Generate input for GP with close to normalized values */
+    double input[] = {gammaEnergy / 1e3, gammaTheta / (2.0 * pi),
+            gammaPhi / pi};
     double variance = m_gp_gausProc.var(input);
     double meanPath;
-
-    if (variance < m_gp_errorMax)
-    {  
+    if (variance < m_gp_errorMax && m_gp_switch == true)
+    { 
         /* We use the regressed value from the GP. Need to convert 
            the mean free path back to proper units */
         meanPath = std::pow(10.0, (100 * m_gp_gausProc.f(input)));
     } else
     {
-        /* We use the slow full method of integration */
+        /* We use the slow full method of integration. */
 
-        /* Find the roation matricies that rotate the gamma ray onto
+        /* Find the rotation matrices that rotate the gamma ray onto
            the z axis and return the gamma ray back */
         G4ThreeVector rotationAxis = gammaDirection.
-                cross(G4ThreeVector(0, 0, 1)).unit();
-        double rotationAngle = gammaDirection.angle(G4ThreeVector(0, 0, 1)); 
+                cross(G4ThreeVector(1, 0, 0));
+        double rotationAngle = gammaDirection.angle(G4ThreeVector(1, 0, 0)); 
         m_rotateForward = G4RotationMatrix(rotationAxis,
                 rotationAngle);
 
@@ -96,6 +96,7 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
         double* comInt    = new double [resolusion];
         double* comAxis   = new double [resolusion];
         double* phiInt    = new double [resolusion];
+        
         // Integral over photon energy epsilon
         for (int i = 0; i < resolusion; i++)
         {
@@ -105,7 +106,7 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
                 // Integrate over phi
                 for (int k = 0; k < resolusion; k++)
                 {
-                    int thetaIndex, phiIndex;
+                    int thetaIndex(0), phiIndex(0);
                     RotateThetaPhi(photonTheta[j], photonPhi[k], thetaIndex,
                             phiIndex);
                     phiInt[k] = photonDensity[i][thetaIndex][phiIndex];
@@ -138,13 +139,13 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
                 energyInt, resolusion) * pi * classic_electr_radius
                 * classic_electr_radius * electron_mass_c2 * electron_mass_c2);
 
-        /* add the new point to the training set, These are roughly normilised
+        /* add the new point to the training set, These are roughly normalized
            to the maximum values expected */
-        m_gp_input [trainCount][0] = gammaEnergy / 1000;
-        m_gp_input [trainCount][1] = thetaPrime / (2.0 * pi);
-        m_gp_input [trainCount][2] = phiPrime / pi;
-        m_gp_mfp[trainCount] = std::log10(meanPath) / 100;
-        trainCount++;
+        m_gp_input[m_trainCount][0] = gammaEnergy / 1000;
+        m_gp_input[m_trainCount][1] = gammaTheta / (2.0 * pi);
+        m_gp_input[m_trainCount][2] = gammaPhi / pi;
+        m_gp_mfp[m_trainCount] = std::log10(meanPath) / 100;
+        m_trainCount++;
 
         delete [] energyInt;
         delete [] comInt;
@@ -153,16 +154,17 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
     }
 
     /* Check if we need to carry out the training again */
-    if(trainCount == m_gp_trainSize)
+    if(m_trainCount == m_gp_trainSize)
     {
         for (int i = 0; i < m_gp_trainSize; i++)
         {
             double input[] = {m_gp_input[i][0], m_gp_input[i][1],
                     m_gp_input[i][2]};
-            m_gp_gausProc.add_pattern(input, m_gp_mfp[trainCount]);
+            m_gp_gausProc.add_pattern(input, m_gp_mfp[i]);
         }
         m_gp_optimiser.maximize(&m_gp_gausProc, 50, 0);
-        trainCount = 0;
+        m_trainCount = 0;
+        m_gp_switch = true;
     }
     return meanPath;
 }
@@ -171,98 +173,80 @@ G4double BreitWheelerGP::GetMeanFreePath(const G4Track& track, G4double,
 G4VParticleChange* BreitWheelerGP::PostStepDoIt(const G4Track& aTrack,
         const G4Step& aStep)
 {
-    /*
+    /* Get the properties of both the interacting gamma and a sampled 
+       photon from the photon field */
     aParticleChange.Initialize(aTrack);
     const G4DynamicParticle *aDynamicGamma = aTrack.GetDynamicParticle();
-    G4ThreeVector gammaMomentum = aDynamicGamma->GetMomentum();
-    double gammaEnergy     = aDynamicGamma->GetKineticEnergy();
-    double photonEnergy    = samplePhotonEnergy();
-    double comEnergy       = sampleComEnergy(photonEnergy, gammaEnergy);
-    double photonAnglePhi  = G4UniformRand() * 2.0 * pi;
-    double photonAngleThe  = std::acos(1.0 - 2.0 * electron_mass_c2
-            * electron_mass_c2 * comEnergy / (gammaEnergy * photonEnergy));
-    */
+ 
+    /* Gamma properties */
+    double gammaEnergy = aDynamicGamma->GetKineticEnergy();
+    G4ThreeVector gammaDirection = aDynamicGamma->GetMomentumDirection();
+    double gammaPhi = std::acos(gammaDirection[2]);
+    double gammaTheta = std::atan(gammaDirection[1] / (gammaDirection[0] + 1e-99));
+    gammaTheta = gammaTheta < 0 ? 2 * pi + gammaTheta : gammaTheta;
+
+    /* Photon properties */
+    double photonEnergy, comEnergy, photonTheta, photonPhi;
+    SamplePhotonField(photonEnergy, comEnergy, photonPhi);
+    photonTheta = std::acos(1.0 - 2.0 * electron_mass_c2 * electron_mass_c2 
+            * comEnergy / (gammaEnergy * photonEnergy));
+    photonTheta = G4UniformRand() < 0.5 ? photonTheta : photonTheta + pi;
+
     /* Find particles properties in the COM frame*/
- /*
     double pairEnergy   = 0.5 * std::sqrt(comEnergy);
     double pairMomentum = std::sqrt(pairEnergy * pairEnergy
                 - electron_mass_c2 * electron_mass_c2);    
-    double pairAngleThe = samplePairAngle(comEnergy);
-    double pairAnglePhi = std::acos(2.0 * G4UniformRand() - 1.0);
-    double pairPx = std::sin(pairAnglePhi) * std::cos(pairAngleThe)
+    double pairTheta = samplePairAngle(comEnergy);
+    double pairPhi   = std::acos(2.0 * G4UniformRand() - 1.0);
+    double pairPx    = std::cos(pairTheta) * std::sin(pairPhi)
             * pairMomentum;
-    double pairPy = std::sin(pairAnglePhi) * std::sin(pairAngleThe)
+    double pairPy    = std::sin(pairTheta) * std::sin(pairPhi)
             *pairMomentum;
-    double pairPz = std::cos(pairAnglePhi) * pairMomentum;
+    double pairPz = std::cos(pairPhi) * pairMomentum;
     G4ThreeVector electronMomentum = G4ThreeVector(pairPx, pairPy, pairPz);
     G4ThreeVector positronMomentum = G4ThreeVector(-pairPx, -pairPy, -pairPz);
-*/
-    /* Apply lorentz transform into rorated lab frame */
-/*
+
+    /* Apply Lorentz transform into rotated lab frame */
     double lorentzFact = (photonEnergy + gammaEnergy) / std::sqrt(comEnergy);
     double electronEnergy = lorentzFact * pairEnergy + std::sqrt(lorentzFact
-            * lorentzFact - 1.0) * electronMomentum[2];
+            * lorentzFact - 1.0) * electronMomentum[0];
     double positronEnergy = lorentzFact * pairEnergy + std::sqrt(lorentzFact
-            * lorentzFact - 1.0) * positronMomentum[2];
-    electronMomentum[2] = std::sqrt(lorentzFact * lorentzFact - 1.0)
-            * pairEnergy + lorentzFact * electronMomentum[2];
-    positronMomentum[2] = std::sqrt(lorentzFact * lorentzFact - 1.0)
-            * pairEnergy + lorentzFact * positronMomentum[2];
-*/
-    /* Apply rotation into frame with gamma along z axis */
- /*
-    double thetaGamma = std::atan(photonEnergy * std::sin(photonAngleThe)
-                / (gammaEnergy + photonEnergy * std::cos(photonAngleThe)));
-    electronMomentum[0] = std::cos(thetaGamma) * electronMomentum[0]
-            - std::sin(thetaGamma) * electronMomentum[2];
-    positronMomentum[0] = std::cos(thetaGamma) * positronMomentum[0]
-            - std::sin(thetaGamma) * positronMomentum[2];
-    electronMomentum[2] = std::sin(thetaGamma) * electronMomentum[0]
-            + std::cos(thetaGamma) * electronMomentum[2];
-    positronMomentum[2] = std::sin(thetaGamma) * positronMomentum[0]
-            + std::cos(thetaGamma) * positronMomentum[2];
-*/
-    /* Apply rotation around the gamma axis by -photonAnglePhi */
-/*
-    electronMomentum[0] = std::cos(photonAnglePhi) * electronMomentum[0]
-            + std::sin(photonAnglePhi) * electronMomentum[1];
-    positronMomentum[0] = std::cos(photonAnglePhi) * positronMomentum[0]
-            + std::sin(photonAnglePhi) * positronMomentum[1];
-    electronMomentum[1] = - std::sin(photonAnglePhi) * electronMomentum[0]
-            + std::cos(photonAnglePhi) * electronMomentum[1];            
-    positronMomentum[1] = - std::sin(photonAnglePhi) * positronMomentum[0]
-            + std::cos(photonAnglePhi) * positronMomentum[1];
-    */
-    /* Apply final rotation into simulation frame */
+            * lorentzFact - 1.0) * positronMomentum[0];
+    electronMomentum[0] = std::sqrt(lorentzFact * lorentzFact - 1.0)
+            * pairEnergy + lorentzFact * electronMomentum[0];
+    positronMomentum[0] = std::sqrt(lorentzFact * lorentzFact - 1.0)
+            * pairEnergy + lorentzFact * positronMomentum[0];
 
-/*
-    double thetaLabXZ = - std::atan(gammaMomentum[0] / gammaMomentum[2]);
-    double thetaLabYZ = std::atan(gammaMomentum[1] / gammaMomentum[2] *
-            std::sqrt(1 + gammaMomentum[0] * gammaMomentum[0]
-                / (gammaMomentum[2] * gammaMomentum[2])));
-    electronMomentum[0] = std::cos(thetaLabXZ) * electronMomentum[0]
-            - std::sin(thetaLabXZ) * (- std::sin(thetaLabYZ)
-                * electronMomentum[1] + std::cos(thetaLabYZ)
-                * electronMomentum[2]);
-    positronMomentum[0] = std::cos(thetaLabXZ) * positronMomentum[0]
-            - std::sin(thetaLabXZ) * (- std::sin(thetaLabYZ)
-                * positronMomentum[1] + std::cos(thetaLabYZ)
-                * positronMomentum[2]);
-    electronMomentum[1] = std::cos(thetaLabYZ) * electronMomentum[1]
-            + std::sin(thetaLabYZ) * electronMomentum[2];
-    positronMomentum[1] = std::cos(thetaLabYZ) * positronMomentum[1]
-            + std::sin(thetaLabYZ) * positronMomentum[2];
-    electronMomentum[2] = std::sin(thetaLabXZ) * electronMomentum[0]
-            + std::cos(thetaLabXZ) * (- std::sin(thetaLabYZ)
-                * electronMomentum[1] + std::cos(thetaLabYZ)
-                * electronMomentum[2]);
-    positronMomentum[2] = std::sin(thetaLabXZ) * positronMomentum[0]
-            + std::cos(thetaLabXZ) * (- std::sin(thetaLabYZ)
-                * positronMomentum[1] + std::cos(thetaLabYZ)
-                * positronMomentum[2]);
-*/
+    /* Apply rotation into frame with gamma along x axis */  
+    double thetaGamma = std::atan(photonEnergy * std::sin(photonTheta)
+                / (gammaEnergy + photonEnergy * std::cos(photonTheta)));
+    electronMomentum[0] = std::cos(thetaGamma) * electronMomentum[0]
+            + std::sin(thetaGamma) * electronMomentum[1];
+    positronMomentum[0] = std::cos(thetaGamma) * positronMomentum[0]
+            + std::sin(thetaGamma) * positronMomentum[1];
+    electronMomentum[1] = std::sin(thetaGamma) * electronMomentum[0]
+            - std::cos(thetaGamma) * electronMomentum[1];
+    positronMomentum[1] = std::sin(thetaGamma) * positronMomentum[0]
+            - std::cos(thetaGamma) * positronMomentum[1];
+
+    /* Apply rotation around the gamma axis by -photonPhi */
+    electronMomentum[1] = std::cos(photonPhi) * electronMomentum[1]
+            + std::sin(photonPhi) * electronMomentum[2];
+    positronMomentum[1] = std::cos(photonPhi) * positronMomentum[1]
+            + std::sin(photonPhi) * positronMomentum[2];
+    electronMomentum[2] = - std::sin(photonPhi) * electronMomentum[1]
+            + std::cos(photonPhi) * electronMomentum[2];            
+    positronMomentum[2] = - std::sin(photonPhi) * positronMomentum[1]
+            + std::cos(photonPhi) * positronMomentum[2];
+
+    /* Apply final rotation into simulation frame */
+    G4ThreeVector rotationAxis = gammaDirection.cross(G4ThreeVector(1, 0, 0));
+    double rotationAngle = gammaDirection.angle(G4ThreeVector(1, 0, 0)); 
+    m_rotateBackward = G4RotationMatrix(rotationAxis, -rotationAngle);
+    electronMomentum = m_rotateBackward(electronMomentum);
+    positronMomentum = m_rotateBackward(positronMomentum);
+
     /* Add new electron and positron and kill the gamma ray */
-/*
     G4DynamicParticle* electron = new G4DynamicParticle(
             G4Electron::Electron(), electronMomentum);            
     G4DynamicParticle* positron = new G4DynamicParticle(
@@ -273,8 +257,8 @@ G4VParticleChange* BreitWheelerGP::PostStepDoIt(const G4Track& aTrack,
     aParticleChange.ProposeMomentumDirection(G4ThreeVector(0,0,0));
     aParticleChange.ProposeEnergy(0.);
     aParticleChange.ProposeTrackStatus(fStopAndKill);
+
     return G4VDiscreteProcess::PostStepDoIt(aTrack, aStep);
-    */
 }
 
 double BreitWheelerGP::crossSection(double comEnergy)
@@ -294,6 +278,12 @@ double BreitWheelerGP::diffCrossSection(double comEnergy, double theta)
             - beta * beta * beta * beta - beta * beta * beta * beta
             * sinT * sinT * sinT * sinT) / ((1.0 - beta * beta * cosT * cosT)
             * (1.0 - beta * beta * cosT * cosT));
+}
+
+void BreitWheelerGP::SamplePhotonField(double photonEnergy, double comEnergy,
+        double photonPhi)
+{
+    /* First sample photon angle phi */
 }
 
  double BreitWheelerGP::samplePhotonEnergy()
@@ -410,13 +400,15 @@ double BreitWheelerGP::interpolate1D(double* samplePoints, double* sampleValues,
 double BreitWheelerGP::arrayIndex(double* samplePoints, double queryPoint,
         int sampleSize)
 {
-    if (queryPoint < samplePoints[0] || queryPoint >
-            samplePoints[sampleSize-1])
-    {
-        std::cerr << "Error: Sample point out of bounds!" << std::endl;
-        exit(1);
-    }
     double index(0);
+    if (queryPoint < samplePoints[0])
+    {
+        index = 0;
+    } else if (queryPoint > samplePoints[sampleSize-1])
+    {
+        index = sampleSize - 1;
+    }
+
     for (int i = 0; i < sampleSize; i++)
     {
         if (samplePoints[i] > queryPoint)
@@ -432,13 +424,14 @@ double BreitWheelerGP::arrayIndex(double* samplePoints, double queryPoint,
 void BreitWheelerGP::RotateThetaPhi(double theta, double phi, int thetaIndex,
         int phiIndex)
 {
-    // find components in cartesian
-    G4ThreeVector vector = G4ThreeVector(std::sin(theta) * std::cos(phi),
-            std::sin(theta) * std::sin(phi), std::cos(theta));
+    G4ThreeVector vector = G4ThreeVector(std::cos(theta) * std::sin(phi),
+            std::sin(theta) * std::sin(phi), std::cos(phi));
     G4ThreeVector vectorPrime = m_rotateForward(vector);
-    double thetaPrime = std::acos(vectorPrime[2]);
-    double phiPrime   = std::atan(vectorPrime[1] / vectorPrime[0]);
 
+    double phiPrime = std::acos(vectorPrime[2]);
+    double thetaPrime   = std::atan(vectorPrime[1] / (vectorPrime[0] + 1e-99));
+    thetaPrime = thetaPrime < 0 ? 2 * pi + thetaPrime: thetaPrime;
+    
     thetaIndex = arrayIndex(m_field->getTheta(), thetaPrime,
             m_field->getResolution());
     phiIndex   = arrayIndex(m_field->getPhi(), phiPrime,
